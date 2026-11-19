@@ -50,7 +50,7 @@ for(Bisect.dir in Bisect.dir.vec){
 (dot.dt <- rbindlist(dot.dt.list))
 status.colors <- c(
   "0"="black",
-  change="grey50",
+  "125"="orange",
   "1"="white")
 St <- function(s)factor(s, names(status.colors))
 (results.dt <- rbindlist(results.dt.list)[, let(
@@ -118,8 +118,11 @@ med.line.list <- list(not.HEAD, HEAD.dt)
   med.line.list,
   function(DT)DT[, c("rank", "variable", "value")])),
   rank + variable ~ .,
-  list(median, length)
-  )[, age := Age("between")][])
+  list(median=function(x)median(x, na.rm=TRUE), length)
+)[, let(
+  age = Age("between"),
+  value_approx = approx(rank, value_median, rank)$y
+)][])
 ggplot()+
   scale_color_manual(values=age.colors)+
   geom_line(aes(
@@ -172,6 +175,53 @@ gg <- ggplot()+
   scale_x_continuous("Commit rank over time")
 print(gg)
 
+#git merge-base --is-ancestor <possible-ancestor-commit> <commit>
+#     git_commit_descendant_of(ancestor, ref = "HEAD", repo = ".")
+repo <- "~/R/animint2"
+ilist <- gert::git_commit_info("d6e41e69", repo=repo)
+first.parents.dt.list <- list()
+for(rank.i in 1:nrow(rank.dt)){
+  rank.row <- rank.dt[rank.i]
+  ilist <- gert::git_commit_info(rank.row$commit, repo=repo)
+  for(parent in ilist$parents){
+    parent.dt <- rank.dt[parent, on="commit", nomatch=0L]
+    before.i <- rank.i-1
+    while(nrow(parent.dt)==0 && 0<before.i){
+      before.dt <- rank.dt[before.i]
+      if(gert::git_commit_descendant_of(before.dt$commit, parent, repo=repo)){
+        parent.dt <- before.dt
+      }
+      before.i <- before.i-1
+    }
+    if(nrow(parent.dt)==0){
+      parent.dt <- data.table(commit=NA, rank=-Inf)
+    }
+    first.parents.dt.list[[paste(rank.i, parent)]] <- data.table(
+      child=rank.row,
+      parent.commit=parent,
+      before=parent.dt)
+  }
+}
+(first.parents.dt <- rbindlist(first.parents.dt.list))
+first.parents.dt[parent==before.commit]
+med.seg.dt.list <- list()
+for(prefix in c("child","before")){
+  on.vec <- c(rank=paste0(prefix,".rank"))
+  med.seg.dt.list[[prefix]] <- med.line.dt[first.parents.dt, .(
+    rank,
+    value=ifelse(is.na(value_approx), -Inf, value_approx)
+  ), on=on.vec]
+}
+(med.seg.dt <- do.call(data.table, med.seg.dt.list))
+ggplot()+
+  geom_segment(aes(
+    child.rank, child.value,
+    xend=before.rank, yend=before.value),
+    data=med.seg.dt)+
+  geom_point(aes(
+    rank, value_approx, color=is.na(value_median)),
+    data=med.line.dt)
+
 HEAD.N <- HEAD.dt[variable=="log10_N"]
 HEAD.N.stats <- dcast(
   HEAD.N,
@@ -194,19 +244,17 @@ for(age in c("old", "new")){
     value.name,
     age=Age,
     pattern="(.*)_(old|new)")))
-change.dt <- setkey(HEAD.N, Bisect, rank)[, {
-  .(
-  rank_change=c(rank,rank[.N]+1)[which(diff(c(0,status,1)) != 0)]-0.5
-)}, by=Bisect][Bisect.range, on="Bisect"]
 (lim.segs <- results.rank[age!="between", {
   ##browser()
   .(
-  med_value=median(value)
+  med_value=median(value, na.rm=TRUE)
   )}, by=.(Bisect, variable, age)][Bisect.range, on="Bisect"])
 (zoom.range <- dcast(
   results.rank,
   Bisect + variable ~ .,
-  list(min, max),
+  list(
+    min=function(x)min(x,na.rm=TRUE),
+    max=function(x)max(x,na.rm=TRUE)),
   value.var=c("value","rank")))
 norm01 <- function(DT)DT[
   zoom.range,
@@ -215,19 +263,33 @@ norm01 <- function(DT)DT[
   rank_rel=rank-rank_min,
   value_norm=(value-value_min)/(value_max-value_min)
 )][]
+norm01(data.table(med.seg.dt)[, let(value=before.value, rank=before.rank)])
+status.zoom <- norm01(status.points[, value := value_approx])
 (points.zoom <- norm01(results.rank))
-(lines.zoom <- norm01(Bisect.range[med.line.dt, .(
-  Bisect, rank=i.rank, variable, value=value_median, age
-), on=.(rank_min<=rank, rank_max>=rank), nomatch=0L]))
+(segs.zoom <- zoom.range[, med.seg.dt[(
+  child.rank %between% c(rank_min, rank_max) & child.value %between% c(value_min, value_max)
+)|(
+  before.rank %between% c(rank_min, rank_max) & before.value %between% c(value_min, value_max)
+)], by=names(zoom.range)])
+for(prefix in c("child", "before")){
+  vname <- function(...)paste0(prefix, ".", c(...))
+  segs.zoom[, vname("rank_rel", "value_norm") := list(
+    get(vname("rank"))-rank_min,
+    (get(vname("value"))-value_min)/(value_max-value_min)
+  )]
+}
 bg.color <- "grey"
 ref.rank <- rank.dt[
   ref.dt,
   on="commit",
   nomatch=0L
-][grep("PR|Bef|Fast", Rname)]
+]
 ref.color <- "deepskyblue"
-line.size <- 2
+line.size <- 1
 href.dt <- unique(details.dt[, .(Commit, commit)])
+status.points <- med.line.dt[
+  HEAD.N[, .(Status, Bisect, rank)],
+  on="rank"]
 viz <- animint(
   out.dir="viz",
   title="animint2 git bisect performance analysis for PR353",
@@ -253,17 +315,21 @@ viz <- animint(
       color=bg.color,
       fill=bg.color,
       data=data.table(HEAD.dt)[, panel := variable])+
+    geom_rect(aes(
+      xmin=rank_min, xmax=rank_max,
+      ymin=value_min, ymax=value_max,
+      key=1),
+      color="black",
+      fill="black",
+      size=1,
+      alpha=0.2,
+      data=zoom.range[, panel := variable],
+      showSelected="Bisect")+
     geom_vline(aes(
       xintercept=rank),
       color=ref.color,
       size=1,
       data=ref.rank)+
-    geom_vline(aes(
-      xintercept=rank_change,
-      key=1),
-      color=status.colors[["change"]],
-      showSelected=c("Bisect","Status"),
-      data=data.table(change.dt, Status=St("change")))+
     geom_label_aligned(aes(
       rank, 0, label=sprintf(" %s ", Rname)),
       color=ref.color,
@@ -274,7 +340,7 @@ viz <- animint(
       xend=ifelse(age=="old", rank_max, rank_new), yend=med_value,
       key=age,
       color=age),
-      size=4,
+      size=1,
       showSelected=c("age","Bisect"),
       data=data.table(lim.segs)[, panel := variable])+
     geom_segment(aes(
@@ -291,14 +357,6 @@ viz <- animint(
       hjust=1,
       showSelected="Bisect",
       data=data.table(Bisect.range, panel = "Bisect"))+
-    geom_point(aes(
-      rank, y, color=age,
-      key=paste(Bisect, age)),
-      clickSelects="Bisect",
-      alpha_off=0.3,
-      showSelected="age",
-      size=4,
-      data=data.table(Bisect.ext, panel = "Bisect"))+
     geom_segment(aes(
       x=rank_min, xend=rank_max,
       y=y, yend=y),
@@ -307,26 +365,26 @@ viz <- animint(
       size=7,
       data=data.table(Bisect.range, panel = "Bisect"))+
     geom_point(aes(
-      rank_change, y, fill=Status),
-      clickSelects="Bisect",
-      showSelected="Status",
-      alpha_off=0.3,
-      size=5,
-      data=data.table(change.dt, panel = "Bisect", Status=St("change")))+
-    geom_line(aes(
-      rank, value_median, color=age,
-      key=1),
-      size=line.size,
-      showSelected="age",
-      data=data.table(med.line.dt)[, panel := variable])+
-    geom_point(aes(
       rank, value,
       key=paste(rank, age),
+      color=age),
+      size=3,
+      showSelected=c("age","Bisect"),
+      data=data.table(results.rank)[age!="between"][, panel := variable])+
+    geom_segment(aes(
+      child.rank, child.value,
+      color=age,
+      xend=before.rank, yend=before.value),
+      size=line.size,
+      data=data.table(med.seg.dt, panel="log10_N", age=Age("between")))+
+    geom_point(aes(
+      rank, value_approx,
+      key=rank,
       fill=Status,
       color=age),
       size=3,
       showSelected=c("Status", "age","Bisect"),
-      data=data.table(results.rank)[, panel := variable])+
+      data=status.points[, panel := variable])+
     geom_tallrect(aes(
       xmin=rank-0.5, xmax=rank+0.5,
       key=rank),
@@ -338,12 +396,21 @@ viz <- animint(
       color_off=NA,
       fill=NA,
       data=data.table(HEAD.dt)[, panel := variable])+
+    geom_point(aes(
+      rank, y, color=age,
+      key=paste(Bisect, age)),
+      clickSelects="Bisect",
+      alpha_off=0.3,
+      showSelected="age",
+      size=4,
+      data=data.table(Bisect.ext, panel = "Bisect"))+
     facet_grid(panel ~ ., scales="free")+
     scale_color_manual(values=age.colors, drop=FALSE)+
     scale_fill_manual(values=status.colors, drop=FALSE)+
     scale_y_continuous("")+
     scale_x_continuous(
-      "Commit rank over time"),
+      "Commit rank over time",
+      breaks=seq(1, 100, by=2)),
   details=ggplot()+
     ggtitle("Asymptotic timing results for selected commit")+
     theme_bw()+
@@ -413,28 +480,34 @@ viz <- animint(
       color=bg.color,
       fill=bg.color,
       data=points.zoom[version=="HEAD"])+
-    geom_line(aes(
-      rank_rel, value_norm, color=age,
-      key=1),
+    geom_segment(aes(
+      before.rank_rel, before.value_norm,
+      color=age,
+      xend=child.rank_rel, yend=child.value_norm,
+      key=child.rank_rel),
       size=line.size,
       showSelected="Bisect",
-      data=lines.zoom)+
+      data=data.table(segs.zoom, age="between"))+
     geom_point(aes(
       rank_rel, value_norm,
       key=paste(rank, age),
+      color=age),
+      size=3,
+      showSelected="Bisect",
+      data=points.zoom[age!="between"])+
+    geom_point(aes(
+      rank_rel, value_norm,
+      key=rank,
       fill=Status,
       color=age),
       size=3,
       showSelected="Bisect",
-      data=points.zoom)+
+      data=status.zoom[age=="between"])+
     coord_cartesian(ylim=c(0,1))+
     facet_grid(variable ~ ., scales="free")+
     scale_color_manual(values=age.colors, drop=FALSE)+
     scale_fill_manual(values=status.colors, drop=FALSE)+
     scale_y_continuous("")+
-    ## scale_y_log10("", labels=function(b){
-    ##   if(max(b, na.rm=TRUE)>1e5)rep("", length(b)) else format(b)
-    ## }),
     geom_tallrect(aes(
       xmin=rank_rel-0.5, xmax=rank_rel+0.5,
       key=rank_rel),
@@ -446,7 +519,8 @@ viz <- animint(
       fill=NA,
       data=points.zoom[version=="HEAD"])+
     scale_x_continuous(
-      "Commit rank relative to bisect"),
+      "Commit rank relative to bisect",
+      breaks=seq(1, 100, by=2)),
   duration=list(
     Commit=1000,
     age=1000,
@@ -455,6 +529,6 @@ viz <- animint(
 viz
 
 if(FALSE){
-  animint2pages(viz, "2026-10-15-bisect-performance-pr7907", chromote_sleep_seconds=3)
+  animint2pages(viz, "2026-11-18-animint2-pr353", chromote_sleep_seconds=3)
   animint2::update_gallery("~/R/gallery-atime")
 }
