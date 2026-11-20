@@ -522,7 +522,9 @@ viz <- animint(
       size=3,
       showSelected="Bisect",
       data=status.zoom[age=="between"])+
-    coord_cartesian(ylim=c(0,1))+
+    coord_cartesian(
+      ylim=c(0,1),
+      xlim=range(status.zoom$rank_rel))+
     facet_grid(variable ~ ., scales="free")+
     scale_color_manual(values=age.colors, drop=FALSE)+
     scale_fill_manual(values=status.colors, drop=FALSE)+
