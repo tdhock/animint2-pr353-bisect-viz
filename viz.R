@@ -4,10 +4,18 @@ details.dt.list <- list()
 dot.dt.list <- list()
 results.dt.list <- list()
 (Bisect.dir.vec <- Sys.glob("data/dinf-thock-02i/bisect/getCommonChunk_improved_in__238/*"))
+##> dput(RColorBrewer::brewer.pal(4, "Set1"))
 age.colors <- c(
-  old="violet",
+  old="deepskyblue",
   between="blue",
   new="red")
+age.colors <- c(
+  new="#E41A1C",
+  between="#377EB8",
+  #"#4DAF4A",
+  #"#984EA3", 
+  old="#FF7F00")
+  #"#FFFF33", "#A65628", "#F781BF")
 Age <- function(age)factor(age, names(age.colors))
 for(Bisect.dir in Bisect.dir.vec){
   Bisect <- function(dt)dt[
@@ -50,7 +58,7 @@ for(Bisect.dir in Bisect.dir.vec){
 (dot.dt <- rbindlist(dot.dt.list))
 status.colors <- c(
   "0"="black",
-  "125"="orange",
+  "125"="green",
   "1"="white")
 St <- function(s)factor(s, names(status.colors))
 (results.dt <- rbindlist(results.dt.list)[, let(
@@ -229,6 +237,7 @@ HEAD.N.stats <- dcast(
   list(length, min, max),
   value.var="rank"
 )[order(rank_min, rank_max)][, y := .I][]
+HEAD.N.bisect <- HEAD.N[HEAD.N.stats[, .(Bisect, y)], on="Bisect"]
 Bisect.range <- nc::capture_first_df(
   HEAD.N.stats,
   Bisect=list(old=".*", "-", new=".*"))
@@ -263,9 +272,12 @@ norm01 <- function(DT)DT[
   rank_rel=rank-rank_min,
   value_norm=(value-value_min)/(value_max-value_min)
 )][]
-norm01(data.table(med.seg.dt)[, let(value=before.value, rank=before.rank)])
+status.points <- med.line.dt[
+  HEAD.N[, .(Status, Bisect, rank)],
+  on="rank"]
 status.zoom <- norm01(status.points[, value := value_approx])
 (points.zoom <- norm01(results.rank))
+med.seg.dt
 (segs.zoom <- zoom.range[, med.seg.dt[(
   child.rank %between% c(rank_min, rank_max) & child.value %between% c(value_min, value_max)
 )|(
@@ -284,12 +296,9 @@ ref.rank <- rank.dt[
   on="commit",
   nomatch=0L
 ]
-ref.color <- "deepskyblue"
-line.size <- 1
-href.dt <- unique(details.dt[, .(Commit, commit)])
-status.points <- med.line.dt[
-  HEAD.N[, .(Status, Bisect, rank)],
-  on="rank"]
+ref.color <- "grey50"
+line.size <- 2
+href.dt <- unique(details.dt[, .(commit)])
 viz <- animint(
   out.dir="viz",
   title="animint2 git bisect performance analysis for PR353",
@@ -299,15 +308,15 @@ viz <- animint(
     theme_bw()+
     theme(legend.position="none")+
     theme_animint(height=700, width=600, rowspan=2)+
-    geom_rect(aes(
-      xmin=rank_old, xmax=rank_new,
-      key=1,
-      ymin=-Inf, ymax=Inf),
-      alpha=0.3,
-      color=NA,
-      fill="grey",
-      showSelected="Bisect",
-      data=data.table(Bisect.range))+
+    ## geom_rect(aes(
+    ##   xmin=rank_old, xmax=rank_new,
+    ##   key=1,
+    ##   ymin=-Inf, ymax=Inf),
+    ##   alpha=0.3,
+    ##   color=NA,
+    ##   fill="grey",
+    ##   showSelected="Bisect",
+    ##   data=data.table(Bisect.range))+
     geom_tallrect(aes(
       xmin=rank-0.5, xmax=rank+0.5,
       key=rank),
@@ -343,13 +352,13 @@ viz <- animint(
       size=1,
       showSelected=c("age","Bisect"),
       data=data.table(lim.segs)[, panel := variable])+
-    geom_segment(aes(
-      x=rank_old, xend=rank_new,
-      y=y, yend=y),
-      size=4,
-      clickSelects="Bisect",
-      alpha_off=0.3,
-      data=data.table(Bisect.range, panel = "Bisect"))+
+    ## geom_segment(aes(
+    ##   x=rank_old, xend=rank_new,
+    ##   y=y, yend=y),
+    ##   size=4,
+    ##   clickSelects="Bisect",
+    ##   alpha_off=0.3,
+    ##   data=data.table(Bisect.range, panel = "Bisect"))+
     geom_text(aes(
       x=max(rank_new), y=1,
       key=1,
@@ -358,10 +367,12 @@ viz <- animint(
       showSelected="Bisect",
       data=data.table(Bisect.range, panel = "Bisect"))+
     geom_segment(aes(
-      x=rank_min, xend=rank_max,
+      x=pmin(rank_old, rank_min),
+      xend=pmax(rank_new, rank_max),
       y=y, yend=y),
       clickSelects="Bisect",
-      alpha_off=0.3,
+      alpha_off=0.1,
+      alpha=0.4,
       size=7,
       data=data.table(Bisect.range, panel = "Bisect"))+
     geom_point(aes(
@@ -374,8 +385,10 @@ viz <- animint(
     geom_segment(aes(
       child.rank, child.value,
       color=age,
+      key=paste(child.rank, before.rank),
       xend=before.rank, yend=before.value),
       size=line.size,
+      showSelected="age",
       data=data.table(med.seg.dt, panel="log10_N", age=Age("between")))+
     geom_point(aes(
       rank, value_approx,
@@ -388,7 +401,7 @@ viz <- animint(
     geom_tallrect(aes(
       xmin=rank-0.5, xmax=rank+0.5,
       key=rank),
-      clickSelects="Commit",
+      clickSelects="commit",
       showSelected="Bisect",
       alpha=1,
       alpha_off=0,
@@ -396,6 +409,12 @@ viz <- animint(
       color_off=NA,
       fill=NA,
       data=data.table(HEAD.dt)[, panel := variable])+
+    geom_point(aes(
+      rank, y, color=age, fill=Status, key=paste(y, rank)),
+      data=data.table(HEAD.N.bisect, panel="Bisect"),
+      size=4,
+      showSelected=c("Status", "age"),
+      clickSelects="Bisect")+
     geom_point(aes(
       rank, y, color=age,
       key=paste(Bisect, age)),
@@ -432,26 +451,26 @@ viz <- animint(
     geom_ribbon(aes(
       N, ymin=min, ymax=max,
       key=age, fill=age, group=age),
-      showSelected=c("age","Commit"),
+      showSelected=c("age","Bisect","commit"),
       alpha=0.2,
       color=NA,
       data=details.dt)+
     geom_line(aes(
       N, median,
       key=age, color=age, group=age),
-      showSelected=c("age","Commit"),
+      showSelected=c("age","Bisect","commit"),
       data=details.dt)+
     geom_point(aes(
       N, unit.value,
       key=age, color=age),
-      showSelected=c("age","Commit"),
+      showSelected=c("age","Bisect","commit"),
       fill="white",
       size=3,
       data=dot.dt)+
     geom_label_aligned(aes(
       N, unit.value, label=age,
       key=age, color=age),
-      showSelected=c("age","Commit"),
+      showSelected=c("age","Bisect","commit"),
       alignment="horizontal",
       vjust=-0.1,
       alpha=0.5,
@@ -464,7 +483,7 @@ viz <- animint(
       hjust=0,
       vjust=0,
       data=href.dt,
-      showSelected="Commit")+
+      showSelected="commit")+
     scale_x_log10("N = data size")+
     scale_color_manual(values=age.colors)+
     scale_fill_manual(values=age.colors)+
@@ -484,7 +503,7 @@ viz <- animint(
       before.rank_rel, before.value_norm,
       color=age,
       xend=child.rank_rel, yend=child.value_norm,
-      key=child.rank_rel),
+      key=paste(before.rank_rel, child.rank_rel)),
       size=line.size,
       showSelected="Bisect",
       data=data.table(segs.zoom, age="between"))+
@@ -511,7 +530,7 @@ viz <- animint(
     geom_tallrect(aes(
       xmin=rank_rel-0.5, xmax=rank_rel+0.5,
       key=rank_rel),
-      clickSelects="Commit",
+      clickSelects="commit",
       showSelected="Bisect",
       alpha=1,
       color="black",
@@ -522,7 +541,7 @@ viz <- animint(
       "Commit rank relative to bisect",
       breaks=seq(1, 100, by=2)),
   duration=list(
-    Commit=1000,
+    commit=1000,
     age=1000,
     Bisect=1000)
 )
